@@ -1,0 +1,326 @@
+library(WGCNA);
+
+#The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+
+########
+#STEP 1
+########
+
+#Read in the female liver data set
+phen0 = read.csv("phenotype.csv");
+sample_id=paste(phen0[,2],phen0[,3],phen0[,4],sep="_")
+
+#Take a quick look at what is in the data set:
+phen2=data.frame(phen0,sample_id)
+write.csv(phen2,file="phenotype1_id.csv",row.names=FALSE)
+data0=read.csv(file="GSE154936_raw_counts.csv")
+data1=data0[,-1]
+rownames(data1)=data0[,1]
+match(phen2[,5],colnames(data1))
+
+#Gene Symbol
+symbol1=read.csv(file="gene_symbol_map.csv",header=FALSE)
+
+
+#Remove MT Ribosomes
+id=grep("^MT",symbol1[,5])
+id1=grep("^RPS",symbol1[,5])
+id2=grep("^RPL",symbol1[,5])
+
+data2=data1[-c(id,id1,id2),]
+symbol2=symbol1[-c(id,id1,id2),]
+
+
+#Normalization
+reads_sum=apply(data2,2,sum)
+data3=data2
+for(i in 1:ncol(data2))
+{
+  data3[,i]=data2[,i]*1000000/reads_sum[i]
+}
+apply(data3,2,sum)
+data3[1:3,]
+
+
+#log2(rpkm+1)
+data4=log2(data3+1)
+boxplot(data4)
+symbol4=symbol2
+
+
+#Remove low express genes, RPKM>1
+exp_mean=apply(data4,1,mean)
+id1=which(exp_mean>1)
+length(id1)
+data5=data4[id1,]
+symbol5=symbol4[id1,]
+
+sd_mean=apply(data5,1,sd)
+exp_mean=apply(data5,1,mean)
+hist(sd_mean/exp_mean)
+id2=which(sd_mean/exp_mean>0.25)
+length(id2)
+data6=data5[id2,]
+symbol6=symbol5[id2,]
+phen6=phen2
+
+cbind(symbol6,rownames(data6))
+dim(data6);
+
+datExpr0=t(data6)
+
+gsg = goodSamplesGenes(datExpr0, verbose = 3);
+gsg$allOK
+
+
+#Clustering to detect outliers
+sampleTree = hclust(dist(datExpr0), method = "average");
+#Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+#The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,
+     cex.axis = 1.5, cex.main = 2)
+
+
+#Plot a line to show the cut
+abline(h = 15, col = "red");
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 15, minSize = 10)
+table(clust)
+
+
+#Remove columns that hold information we do not need.
+allTraits = phen6[, -c(2:4)];
+rownames(allTraits) = phen6[,5]
+dim(allTraits)
+collectGarbage();
+
+
+datExpr=datExpr0
+datTraits=allTraits
+
+#Re-cluster samples
+sampleTree2 = hclust(dist(datExpr), method = "average")
+#Convert traits to a color representation: white means low, red means high, grey means missing entry
+cell=c(rep(1,6),rep(2,6),rep(3,6),rep(4,6))
+traitColors = numbers2colors(as.numeric(cell), signed = FALSE);
+#Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(datTraits),
+                    main = "Sample dendrogram and trait heatmap")
+
+#Save Step 1
+save(datExpr, datTraits, file = "Step1.RData")
+
+########
+#STEP 2
+########
+
+enableWGCNAThreads()
+#Load the data saved in the first part
+lnames = load(file = "step1.RData");
+#The variable lnames contains the names of loaded variables.
+lnames
+
+#Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+#Call the network topology analysis function
+sft = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)
+#Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+
+#Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+
+#This line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+
+#Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+
+#Blockwise Modules
+net = blockwiseModules(datExpr, power = 6,
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "Celltreatment",
+                       verbose = 3)
+
+
+#Open a graphics window
+sizeGrWindow(12, 9)
+#Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+#Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+
+#Save Step 2
+save(MEs, moduleLabels, moduleColors, geneTree,
+     file = "step2-networkConstruction-auto.RData")
+
+
+########
+#STEP 4
+########
+
+lnames = load(file = "step1.RData");
+lnames
+load (file="step2-networkConstruction-auto.RData")
+
+#Paired t-test Remdesivir vs DMSO (found module8)
+p_module=rep(NA, ncol(MEs))
+tstat_module=rep(NA, ncol(MEs))
+names(p_module)=colnames(MEs)
+
+for(i in 1:ncol(MEs))
+{
+  data0=MEs[,i]
+  id1=grep("Rem",rownames(MEs))
+  id2=grep("DMSO",rownames(MEs))
+  group1=data0[id1]
+  group2=data0[id2]
+
+  p_module[i]=t.test(group1,group2,paired=TRUE)$p.value
+  tstat_module[i]=t.test(group1,group2,paired=TRUE)$estimate
+}
+
+result=data.frame(p_module,tstat_module)
+colnames(result)=c("p_value","mean_difference")
+write.csv(result,file="C:\\Users\\annag\\Desktop\\R\\InternshipRPackage\\Rem_vs_DMSO_module.csv")
+
+#Bar plot figure for module 8
+i=7 #module8
+data0=MEs[,i]
+id1=grep("Rem",rownames(MEs))
+id2=grep("DMSO",rownames(MEs))
+group1=data0[id1]
+names(group1)=rownames(MEs)[id1]
+group2=data0[id2]
+names(group2)=rownames(MEs)[id2]
+
+Samplename=as.factor(c(names(group1),names(group2)))
+ME_eigengene=c(group1,group2)
+pdf(file="module8_barplot.pdf",width=12,height=8)
+par(mar=c(11,4,4,4))
+barplot(ME_eigengene~Samplename,cex.names=0.51,main="Module 8",las=2, xlab="")
+dev.off()
+
+
+#Paired t-test HCQ vs DMSO (found module0)
+p_module=rep(NA, ncol(MEs))
+tstat_module=rep(NA, ncol(MEs))
+names(p_module)=colnames(MEs)
+
+for(i in 1:ncol(MEs))
+{
+  data0=MEs[,i]
+  id1=grep("HCQ",rownames(MEs))
+  id2=grep("DMSO",rownames(MEs))
+  group1=data0[id1]
+  group2=data0[id2]
+
+  p_module[i]=t.test(group1,group2,paired=TRUE)$p.value
+  tstat_module[i]=t.test(group1,group2,paired=TRUE)$estimate
+}
+
+result=data.frame(p_module,tstat_module)
+colnames(result)=c("p_value","mean_difference")
+write.csv(result,file="C:\\Users\\annag\\Desktop\\R\\InternshipRPackage\\HCQ_vs_DMSO_module.csv")
+
+
+#Bar plot figure for module 0
+i=10 #module0
+data0=MEs[,i]
+id1=grep("HCQ",rownames(MEs))
+id2=grep("DMSO",rownames(MEs))
+group1=data0[id1]
+names(group1)=rownames(MEs)[id1]
+group2=data0[id2]
+names(group2)=rownames(MEs)[id2]
+
+Samplename=as.factor(c(names(group1),names(group2)))
+ME_eigengene=c(group1,group2)
+pdf(file="module0_barplot.pdf",width=12,height=8)
+par(mar=c(11,4,4,4))
+barplot(ME_eigengene~Samplename,cex.names=0.51,main="Module 0",las=2, xlab="")
+dev.off()
+
+########
+#STEP 4
+########
+module=8
+id=which(moduleLabels==module)
+sel=moduleLabels[id]
+length(sel)
+
+map0=read.csv(file="gene_symbol_map.csv",header=FALSE)
+id=match(names(sel),map0[,1])
+genename=map0[id,c(1,5)]
+map1=data.frame(sel,genename)
+
+#Recalculate topological overlap if needed
+TOM = TOMsimilarityFromExpr(datExpr, power = 6);
+
+#module=0
+module=8
+inModule=which(moduleLabels==module)
+modTOM = TOM[inModule, inModule];
+
+sel=moduleLabels[inModule]
+length(sel)
+map0=read.csv(file="gene_symbol_map.csv",header=FALSE)
+id=match(names(sel),map0[,1])
+genename=map0[id,c(1,5)]
+map1=data.frame(sel,genename)
+
+modProbes=rownames(map1)
+modGenes=map1[,3]
+
+#Keep below steps if needed
+
+#Read in the annotation file
+#annot = read.csv(file = "GeneAnnotation.csv");
+#Select modules
+#modules = c("brown", "red");
+#Select module probes
+#probes = names(datExpr)
+#inModule = is.finite(match(moduleColors, modules));
+#modProbes = probes[inModule];
+#modGenes = annot$gene_symbol[match(modProbes, annot$substanceBXH)];
+#Select the corresponding Topological Overlap
+
+dimnames(modTOM) = list(modProbes, modProbes)
+#Export the network into edge and node list files Cytoscape can read
+cyt = exportNetworkToCytoscape(modTOM,
+                               edgeFile = paste("CytoscapeInput-edges-", paste(modules, collapse="-"), ".txt", sep=""),
+                               nodeFile = paste("CytoscapeInput-nodes-", paste(modules, collapse="-"), ".txt", sep=""),
+                               weighted = TRUE,
+                               threshold = 0.02,
+                               nodeNames = modProbes,
+                               altNodeNames = modGenes,
+                               nodeAttr = moduleColors[inModule]);
+
+#write.csv(cyt$edgeData,file="Rem_module8_cytoscape.csv")
+write.csv(cyt$edgeData,file="HCQ_module0_cytoscape.csv")
